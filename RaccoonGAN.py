@@ -3,7 +3,7 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import PIL
+from PIL import Image
 from tensorflow.keras import layers
 import cv2
 import time
@@ -11,17 +11,21 @@ import time
 from IPython import display
 
 def main():
-    train_path = "/home/jacob/Documents/ImageClassification/racconsVredpandas/train"
-    train_raccoon_dir = os.path.join(train_path, 'raccoons')
+    train_path = "/home/jacob/Pictures/celeb-faces"
+    train_raccoon_dir = os.path.join(train_path, 'img_align_celeba')
+    checkpoint_dir = "./checkpoints"
+    checkpoint_prefix = os.path.join(checkpoint_dir, "point")
 
-    image_generator = tf.keras.preprocessing.image.ImageDataGenerator(rescale=1./255)
-    train_data_gen = image_generator.flow_from_directory(directory=train_raccoon_dir,
-                                                         batch_size=32,
-                                                         target_size=(56,56),
-                                                         classes={"raccoons"},
+    image_generator = tf.keras.preprocessing.image.ImageDataGenerator(rescale=1/255)
+    train_data_gen = image_generator.flow_from_directory(directory=train_path,
+                                                         batch_size=64,
+                                                         target_size=(112,112),
+                                                         class_mode=None,
                                                          color_mode="grayscale")
 
     generator = make_generator()
+
+    print(len(os.listdir(train_raccoon_dir)))
 
     noise = tf.random.normal([1, 100])
 
@@ -31,6 +35,8 @@ def main():
     plt.savefig("test.png")
 
     critic = make_critic()
+
+
 
     cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
@@ -47,13 +53,20 @@ def main():
     critic_optimizer = tf.keras.optimizers.Adam(1e-4)
     generator_optimizer = tf.keras.optimizers.Adam(1e-4)
 
-    EPOCHS = 50
+    checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
+                                     discriminator_optimizer=generator_optimizer,
+                                     generator=generator,
+                                     critic=critic)
+
+    checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
+
+    EPOCHS = 3000
     noise_dim = 100
     examples_to_gen = 16
 
     seed = tf.random.normal([examples_to_gen, noise_dim])
 
-    @tf.function
+    #@tf.function
     def train_steps(image):
         print("training a step")
         noise = tf.random.normal([128, noise_dim])
@@ -62,6 +75,7 @@ def main():
             gen_imgs = generator(noise, training=True)
 
             fake_out = critic(gen_imgs, training=True)
+            image = tf.reshape(image, [1, 112, 112, 1])
             real_out = critic(image, training=True)
 
             gen_loss = generator_loss(fake_out)
@@ -73,26 +87,29 @@ def main():
         generator_optimizer.apply_gradients(zip(gradis_of_gen, generator.trainable_variables))
         critic_optimizer.apply_gradients(zip(gradis_of_crit, critic.trainable_variables))
 
-
     def train(dataset, epochs):
-        counter = 0
+        counter = 500
         img_counter = 0
         for epoch in range(epochs):
             print("Training Epoch ", counter)
             counter += 1
             start = time.time()
 
-            img = next(dataset)
-            while img_counter < 200:
+            img_arr = dataset.next()
+
+            for img in img_arr:
                 print("Image ", img_counter, " trained")
                 img_counter += 1
-                train_steps(img[0])
-                img = next(dataset)
+                train_steps(img)
             img_counter = 0
             print()
 
             display.clear_output(wait=True)
-            generate_and_save(generator, epoch + 1, seed)
+            generate_and_save(generator, counter + 1, seed)
+
+            if (counter + 1) % 20 == 0:
+                checkpoint.save(checkpoint_prefix)
+                print("Check Point Created!")
 
             print("Epoch #", epoch, " Time: ", time.time() - start)
 
@@ -101,11 +118,8 @@ def main():
 
     def generate_and_save(model, epoch, test_input):
         predictions = model(test_input, training=False)
-        fig = plt.figure(figsize=(4,4))
-
         for i in range(predictions.shape[0]):
-            plt.subplot(4, 4, i+1)
-            plt.imshow(predictions[1, :, :, 0] * 127.5 * 127.5, cmap='gray')
+            plt.imshow(predictions[0, :, :, 0], cmap='gray')
             plt.axis('off')
 
         plt.savefig('image_at_epoch_{}.png'.format(epoch))
@@ -137,18 +151,33 @@ def make_generator():
     model.add(layers.BatchNormalization())
     model.add(layers.LeakyReLU())
 
+    model.add(layers.Conv2DTranspose(16, (5, 5), strides=(2, 2), padding='same', use_bias=False))
+    assert model.output_shape == (None, 56, 56, 16)
+
     model.add(layers.Conv2DTranspose(1, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-    assert model.output_shape == (None, 56, 56, 1)
+    assert model.output_shape == (None, 112, 112, 1)
 
     return model
 
 def make_critic():
     model = tf.keras.Sequential()
-    model.add(layers.Conv2D(64, (5,5), strides=(2,2), padding='same', input_shape=[56,56,1]))
+    model.add(layers.Conv2D(64, (5,5), strides=(2,2), padding='same', input_shape=[112,112, 1]))
     model.add(layers.LeakyReLU())
     model.add(layers.Dropout(0.1))
 
-    model.add(layers.Conv2D(128, (5, 5), strides=(2,2), padding='same', input_shape=[56,56,1]))
+    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same', input_shape=[112, 112, 1]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.1))
+
+    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same', input_shape=[112, 112, 1]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.1))
+
+    model.add(layers.Conv2D(128, (5, 5), strides=(2,2), padding='same', input_shape=[112,112,1]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.1))
+
+    model.add(layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same', input_shape=[112, 112, 1]))
     model.add(layers.LeakyReLU())
     model.add(layers.Dropout(0.1))
 
